@@ -1,0 +1,833 @@
+# 開発方針＆開発環境ルール(RS-Red)
+
+作業ドライブは`F:\runo`。この節は[`open-raid-z`](https://github.com/aon-co-jp/open-raid-z)の
+`CLAUDE.md`を正本とし、各プロジェクトへコピーして同期する方針に準じる。
+GitHubリポジトリ: [aon-co-jp/RS-Red](https://github.com/aon-co-jp/RS-Red)
+(旧名`RS-Chiketto`、2026-07-22に`RS-Red`へ改名)。
+VPS上の作業パス: `/root/RS-Red`(2026-07-22改名、旧`/root/RS-Chiketto`から移動)。
+公開先: `https://runo.tokyo/RS-Red`(旧`/chiketto`は301リダイレクト)。
+
+## このプロジェクトの役割
+
+[Redmine](https://redmine.org/)(実際にはRuby on Rails製)の、
+ハイスピード・ハイセキュリティ・省メモリなRust+[poem](https://github.com/poem-web/poem)
+(RPoem)版を目指す。`RS-Git`(Gitea相当)・`RJSON`(JSON処理)と同じ
+`aon-co-jp`エコシステムの一員。
+
+> ⚠️ **正直な開示**: 2026-07-21時点でコード未着手(このCLAUDE.mdのみの
+> 状態)。このエコシステム共通の方針として、実装が追いつくまでは
+> 「Redmineの代替品」を名乗らず、進捗をこのHANDOFFに正直に記録する。
+
+## 着手時に踏襲すべき既存プロジェクトの設計方針
+
+- **`RS-Git`**(git smart HTTP・OTPログイン・アクセス制御・容量ベースの
+  自動判定)を先行実装として参照。特に「正直な開示」「段階的実装」
+  「型チェックだけで完了と報告しない・実機検証必須」の3方針は共通。
+- **`RJSON`**(依存を絞った設計、`light`/`full`のfeature分離)も
+  参照——RS-Chiketto側で構造化データ処理が必要になった際の候補。
+
+## Redmineの主要機能(着手時の優先順位付けの参考)
+
+- チケット(Issue)管理・ワークフロー・カスタムフィールド
+- プロジェクト・サブプロジェクト階層
+- ガントチャート・カレンダー
+- Wiki・フォーラム
+- リポジトリ連携(SCM閲覧)
+- ユーザー・ロール・権限管理
+
+## 方針決定事項(2026-07-21、ユーザー確認済み)
+
+- **着手順番**: `RS-Chiketto`・`RS-Blog`・`RS-EC`は同時並行ではなく
+  **1つずつ順番に、`RS-Git`と同じ深さまで作り込んでから次へ**進める。
+  どれを最初にするかは次回セッション冒頭で決定。
+- **データベース**: `aruaru-db`(ZFS互換・ACID互換のRust製DB、
+  `open-raid-z`エコシステム)を採用し、3プロジェクトで統一する。
+  加えて**PostgreSQLとのDUAL DATABASE構成も可能にする**(ユーザー指示、
+  2026-07-21追記)——`open-runo`/RPoemが既に採用している「4層4重」の
+  DUAL DB思想と同じ方針。`aruaru-db`単独運用とDUAL構成のどちらで動くかを
+  設定で切り替えられる設計とし、片方に依存しすぎないアーキテクチャに
+  する(実装時、`open-runo`/RPoem側のDUAL DB実装を先行事例として参照)。
+- **「分身の術」構成でDB層を共有する**(ユーザー指示、2026-07-21追記):
+  `open-web-server`・`aruaru-llm`・RPoem/RCosmo・`open-web-server`と
+  同じ設計思想により、`aruaru-db`/PostgreSQL接続は**1インスタンスを
+  複数ドメイン(RS-Chiketto自身も含め、将来の`RS-Blog`/`RS-EC`他)が
+  共有**する。ドメイン・プロジェクトを追加するたびに個別にDBを
+  インストール・起動する必要はない。実装時は`aruaru-llm`の
+  `src/tenants.rs`(`TenantRegistry`、`RwLock`によるプロセス内共有状態、
+  再起動不要で実行時追加・削除可能)と同じパターンを踏襲する。
+  **管理は`open-easy-web`側から行う**(ユーザー指示、2026-07-21追記)
+  ——`aruaru-llm`が`open-easy-web/server/src/appserver_registration.rs`の
+  `AppServerKind::AruaruLlm`/`register_aruaru_llm()`経由でテナント登録
+  される設計と同じパターンで、`RS-Chiketto`(および将来の`RS-Blog`/
+  `RS-EC`)用の`AppServerKind`variantを追加し、ドメイン追加を
+  `open-easy-web`の「サイト管理」画面から一元管理できるようにする。
+  **非同期・マルチCPU/マルチコア/マルチスレッド対応**:
+  `#[tokio::main]`は既定の`multi_thread`フレーバー(`current_thread`への
+  固定はしない)、CPU負荷の高い処理は`rayon`で全論理コアへ並列
+  ディスパッチする(`aruaru-llm`の`opencuda_cpu::CpuDevice`と同じ方針)。
+
+## 公開先・配布方針(2026-07-21、ユーザー確認済み)
+
+- **公開パス**: `runo.tokyo/chiketto`(`RS-Git`の`runo.tokyo/rgit`と同じ
+  パス方式、VPS上のポートは`8100`)。
+- **クロスプラットフォーム配布**: AlmaLinux・Ubuntu・Debian・Fedora・
+  RHEL等の主要Linuxディストリ、Windows・Windows Server向けに、
+  インストーラー付きのビルド済みバイナリをGitHub Releasesで配布する
+  (ユーザー指示)。`.github/workflows/release.yml`でタグpush時に
+  自動ビルド、Linux版は`x86_64-unknown-linux-musl`(静的リンク、
+  ディストリ非依存)、Windows版は`x86_64-pc-windows-msvc`。
+  `install.sh`(systemdサービス登録)・`install.ps1`(Windowsサービス
+  登録手順の案内)を同梱。詳細は`README.md`参照。
+
+## HANDOFF
+
+- **2026-07-24 スマホ縦画面レスポンシブ対応+英語(日本語)ハイブリッド表示を
+  ブラウザGUI(`web/`)に追加(ユーザー指示「open-easy-webとRS-Redブラウザ版
+  の完成度と実用性を高めて。スマホだと縦画面にも自動切換えしてする機能を
+  搭載して。表示を英語と(日本語)でハイブリッドに表示して」)**:
+  1. **レスポンシブ対応**: 「自動切換え」は標準的なCSSメディアクエリに
+     よるレスポンシブデザインと解釈(過剰実装回避)。`web/index.html`に
+     `@media (max-width: 600px)`を追加(`main`の余白縮小・見出し
+     フォントサイズ調整)。既存の`main { max-width: 720px }`が単一
+     カラム構成のため、レイアウト崩れの主因はタップ操作性だった——
+     全`button`/`input`/`textarea`/`select`に`min-height: 44px`
+     (Web標準のタッチターゲット推奨サイズ)を追加。
+  2. **英語(日本語)ハイブリッド表示**: `web/index.html`の静的HTML
+     シェル全体(見出し・ボタン・フォームラベル・placeholder)を
+     「英語表記の直後に(日本語)を括弧書き」形式へ統一(例:
+     "Login (ログイン)"、"Create ticket (チケット作成)")。
+     `web/src/lib.rs`側で`format!`により動的生成されるエラー
+     メッセージ・ステータス文言(例: "通信エラーが発生しました。")は
+     可読性を優先し今回は対象外とした(ユーザー指示「長い説明文・
+     エラーメッセージは工学的判断でバランスよく」に従う、段階的実装)。
+  3. **検証**: `python -m http.server`でこのリポジトリにコミット済みの
+     `web/pkg/`(既存ビルド成果物、今回のHTML編集はJS/WASM側に影響
+     しないため再ビルド不要)と新しい`index.html`を配信し、**実ブラウザ
+     (Claude Browser pane)でスマホ幅(375x812)・デスクトップ幅の両方を
+     確認**——ログイン画面の英語(日本語)併記が実際に描画され、
+     コンソールエラー無し、白画面バグ無し(型チェックのみでの完了
+     報告ではない、既存の検証基準どおり)。
+  4. **未対応の範囲(正直な開示)**: `web/src/lib.rs`内で
+     `set_html`/`format!`により動的生成されるプロジェクト一覧・
+     チケット一覧・コメント一覧・Wiki一覧の項目文言(例: "改訂履歴:
+     {}件")は今回対応していない(静的HTMLシェルが優先度の高い箇所
+     という判断)。ログイン後の画面(プロジェクト/チケット/Wiki操作系)
+     は前回までと同じくSMTP未設定のためブラウザ実機でのフルE2E
+     未検証のまま。
+  - 次にすべきこと: (1) `web/src/lib.rs`側の動的生成リスト項目・
+    ステータス文言の英語(日本語)併記化検討、(2) 実SMTP環境での
+    ログイン後画面のブラウザ実機フルE2E(既存の未着手項目、継続)。
+
+- **2026-07-23(続き) DDNS運用対応と`StorageBackend`抽象化の実コード化
+  (ユーザー指示「RS-Redの実用性と完成度を高めて。特にAndroidスマホや
+  WindowsとLINUXなどでのDDNSでの運用とDATAやDBはGoogleドライブや有名な
+  クラウド保存も可能にして、レンタルサーバーのフォルダやVPSレンタル
+  サーバー」)**:
+  1. **完了・DDNS**: `src/ddns.rs`を新設。`open-web-server`の
+     `crates/open-web-server-gateway/src/ddns.rs`と同じ設計パターン
+     (汎用URLテンプレート方式、`{ip}`プレースホルダ、`api.ipify.org`で
+     のグローバルIP検知、5分間隔で変化時のみ更新)を、直接依存はせず
+     自己完結で移植。環境変数`RSCHIKETTO_DDNS_UPDATE_URL`(既存の
+     `RSCHIKETTO_*`命名規則に従う)、既定オフのオプトイン。
+     `main()`起動時に`ddns::spawn_if_configured()`を呼ぶよう配線済み。
+     **正直な開示(Android)**: Android版で実際にDDNS常駐更新が使える
+     のは、`open-web-server`と同様APK化(未着手)完了後——RS-Red自体は
+     現状Windows/Linuxネイティブバイナリとして動作する設計であり、
+     このモジュールの動作確認もそのネイティブバイナリ上に限る。
+  2. **完了・`StorageBackend`抽象化(設計スケッチ→実コード)**:
+     `src/storage.rs`を新設。`trait StorageBackend`
+     (`read`/`write`/`ensure_dir`/`exists`の最小契約、`async_trait`)、
+     `LocalFsBackend`(既定、`tokio::fs`直書きラップ、実ファイルI/Oで
+     テスト済み)、`SftpBackend`(`ssh2`crateベース、`sftp`フィーチャ
+     フラグ下、`open-web-server`が使う`russh`/`russh-sftp`とは別crateで
+     自己完結実装——直接コード共有はしない既存方針を厳守)、
+     `GDriveBackend`(`reqwest`でGoogle Drive REST APIのアップロード
+     エンドポイントを直接叩く軽量実装、OAuth2アクセストークンは
+     `RSCHIKETTO_GDRIVE_ACCESS_TOKEN`)。環境変数
+     `RSCHIKETTO_STORAGE_BACKEND`(`local`/`sftp`/`gdrive`、既定`local`)
+     で選択名を取得する`selected_backend_name()`を実装し、起動時ログに
+     出力するよう配線。
+     **正直な開示・実装範囲の限界**:
+     - `LocalFsBackend`のみが実際のI/O動作を持つ。既存の各`Store`
+       (`project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/`access.rs`)
+       の`load`/`save`は、このセッションでは**まだ`StorageBackend`経由
+       に配線していない**(従来通り`std::fs`直呼び出しのまま)——
+       トレイトと`LocalFsBackend`の実装・テストまでが今回のスコープ。
+     - `SftpBackend`の`read`/`write`/`ensure_dir`本体は
+       **プレースホルダ**(呼ぶと明示的にエラーを返す)。接続確立
+       (`connect()`、TCP+SSHハンドシェイク+パスワード認証)のコードは
+       書いたが、実SFTPサーバーが無い環境のため到達確認はしていない。
+       ユニットテストは`SftpConfig::remote_path`のパス正規化など、
+       ネットワークを伴わないロジックのみを検証(`open-web-server`の
+       `sftp.rs`のようなループバックSSHサーバーを使った実接続テストは
+       今回未実施——コスト対効果と時間制約により見送り、正直に明記)。
+     - `GDriveBackend`は`write`(アップロード)のHTTPリクエスト構築まで
+       実装したが、実Google Drive APIキーが無いため実際の到達確認は
+       していない。`read`(パスからファイルID解決)は未実装。
+       OAuth2認証情報(クライアントID/シークレット、アクセストークン)
+       はユーザー自身がGoogle Cloudプロジェクトで取得する前提であり、
+       このソフトウェア自体が代行取得することはできない。
+     - Dropbox・OneDrive等その他の「有名なクラウド保存」は未着手。
+       `StorageBackend`トレイトが汎用設計のため後から追加可能。
+  3. **検証**: `cargo build --tests`成功(warningは未配線の
+     `SftpConfig`フィールド・`GDriveConfig::from_env`の未使用警告のみ、
+     機能上の問題ではない)。`cargo test`**52件全green**
+     (既存38件+新規14件:`ddns`3件、`storage`11件——うち
+     `LocalFsBackend`3件は実ファイルI/Oで検証、他はネットワークを
+     伴わないロジック検証)。
+  - 次にすべきこと: (1) 既存`Store`群の`load`/`save`を
+    `StorageBackend`経由に実配線(既定`LocalFsBackend`で既存動作を
+    壊さない移行)、(2) `SftpBackend`の`read`/`write`/`ensure_dir`本体
+    実装+実SFTPサーバー(またはループバックSSHサーバー)での到達確認、
+    (3) `GDriveBackend`の`read`(ファイルID解決)実装+実APIキーでの
+    到達確認、(4) Android版アプリシェル(既定`gdrive`)とAPK化、
+    (5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+
+- **2026-07-23(続き) 上記(1)完了: 既存`Store`群を`StorageBackend`経由へ
+  実配線(ユーザー指示「正直な残課題をどんどん開発で解決して」)**:
+  1. **完了**: `project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/
+     `access.rs`の各`load`/`save`のシグネチャに`backend: &dyn
+     StorageBackend`引数を追加し、関数内部の`tokio::fs::read`/
+     `tokio::fs::write`直呼び出しを`backend.read(...)`/
+     `backend.write(...)`へ置き換えた(`save`系の戻り値型も
+     `std::io::Result<()>`から`anyhow::Result<()>`へ変更——呼び出し側は
+     いずれも`.map_err(|e| e.to_string())`または`.unwrap()`パターンの
+     ため無変更で通る)。
+  2. `AppState`(`main.rs`)に`backend: Arc<dyn storage::StorageBackend>`
+     フィールドを追加。`main()`は`storage::backend_from_env()`
+     (新設ファクトリ、`RSCHIKETTO_STORAGE_BACKEND`を見て現状は常に
+     `LocalFsBackend`を返す——`local`以外が指定された場合は警告ログを
+     出しつつフォールバックする、後述の理由)。全ハンドラの呼び出し
+     箇所(51箇所)を`state.backend.as_ref()`を渡す形に機械的に置換。
+     テスト側で`AppState`を直接構築する箇所(8箇所)・`data_root`変数を
+     直接使う箇所は`&storage::LocalFsBackend`を明示的に渡す形に統一。
+  3. **`backend_from_env()`が`local`以外で常にフォールバックする理由
+     (正直な開示)**: `SftpBackend`/`GDriveBackend`の`read`/`write`/
+     `ensure_dir`本体はまだプレースホルダ(エラーを返すだけ)のため、
+     `RSCHIKETTO_STORAGE_BACKEND=sftp`等を指定してもそのまま使うと
+     保存が一切できずデータを失う動作になる。それを避けるため、
+     現時点では`local`以外が指定されたら警告ログを出して
+     `LocalFsBackend`にフォールバックする安全側の判断とした
+     ——`SftpBackend`/`GDriveBackend`の本体実装(下記(2)(3))が
+     完了した時点でこのフォールバックを外す。
+  4. **検証**: `cargo build --tests`成功(warningは未配線の
+     `SftpConfig`フィールド等のみ、機能上の問題なし)。`cargo test`
+     **52件全green**(既存の全テストが挙動を変えず通過——
+     `LocalFsBackend`は既存の`std::fs`直書きの単純なラップのため、
+     置き換え後もローカルディスクへの読み書き結果は完全に同一)。
+  - 次にすべきこと: (1) `SftpBackend`の`read`/`write`/`ensure_dir`本体
+    実装+実SFTPサーバー(またはループバックSSHサーバー)での到達確認、
+    (2) `GDriveBackend`の`read`(ファイルID解決)実装+実APIキーでの
+    到達確認、(3) 上記(1)(2)完了後に`backend_from_env()`の
+    フォールバックを解除、(4) Android版アプリシェル(既定`gdrive`)と
+    APK化、(5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+
+- **2026-07-23(続き) 上記(1)(2)着手・一部完了(ユーザー指示「正直な
+  残課題をどんどん開発で解決して」の続き)**:
+  1. **完了・`GDriveBackend::read`**: `files.list`(`q=name='...' and
+     'folder_id' in parents`のクエリで名前検索、`urlencode`は依存を
+     増やさないための自前の最小実装)→`files.get?alt=media`
+     (ダウンロード)の2段階呼び出しとして実装。`reqwest`に`json`
+     フィーチャが不足していたビルドエラー(`Response::json`未検出)を
+     `Cargo.toml`で修正。単体テスト5件追加(`list_url`のクエリ組み立て・
+     `download_url`・`file_name`のパス末尾抽出・`urlencode`のエスケープ)
+     ——実APIキーが無いためHTTPリクエスト構築ロジックのみの検証である
+     ことは変わらず正直に開示。
+  2. **一部完了・`SftpBackend`本体実装**: `read`/`write`/`ensure_dir`/
+     `exists`を`ssh2`crateで実装(`tokio::task::spawn_blocking`で
+     同期APIをラップ、`write`は書き込み前に親ディレクトリを再帰
+     `mkdir`)。**正直な開示(未完了部分)**: この環境には実SFTP
+     サーバーが無く、`open-web-server`の`sftp.rs`が採用したような
+     ループバックSSHサーバー(`russh`のサーバー機能)を本セッションでは
+     追加できなかった——`ssh2`はクライアント専用crateのためテスト
+     サーバー役には使えず、サーバー側実装のコストとの兼ね合いで見送った
+     判断。よってこの`SftpBackend`は**型チェック・単体テスト(パス
+     正規化ロジックのみ)は通っているが、実ネットワーク越しの接続・
+     読み書きの到達確認はまだ一度もできていない**——実SFTPサーバー
+     環境が用意でき次第、最優先で検証すること。
+  3. `backend_from_env()`の「`local`以外は警告してフォールバック」は
+     今回も維持(上記の理由により`sftp`/`gdrive`とも実ネットワーク到達
+     未確認のため、安全側の判断を継続)。
+  4. **検証**: `cargo test`(既定)**57件全green**(52件+`GDriveBackend`
+     関連5件)。`cargo build --features sftp --tests`成功(warningは
+     未配線分のみ)。
+  - 次にすべきこと: (1) 実SFTPサーバーまたはループバックSSHサーバーでの
+    `SftpBackend`到達確認、(2) 実Google Drive APIキーでの`GDriveBackend`
+    到達確認、(3) 上記完了後に`backend_from_env()`のフォールバックを
+    解除、(4) Android版アプリシェル(既定`gdrive`)とAPK化、
+    (5) `aruaru-db`/PostgreSQL DUAL DB移行、(6) ガントチャート・
+    カレンダーのGUI実装。
+  - **Android クロスコンパイル再確認(2026-07-23、本セッション末尾)**:
+    `cargo ndk -t arm64-v8a build`を実行し、`rs-chiketto`が
+    aarch64-linux-android向けに(`reqwest`/`ssh2`/`async-trait`追加後の
+    今のCargo.tomlでも)警告のみ・エラーなしでビルドできることを再確認。
+    ただしこれは「クロスコンパイルが通る」ことの確認のみで、Android上での
+    実機動作・GUI/アプリシェル自体は引き続き未着手(APK化含む)。
+
+- **課題(次回対応、2026-07-23発見)**: 実ブラウザでOTPログインを試すと
+  `login-status`に「SMTP未設定のため、このサーバーではOTP送信できません。」
+  と表示される(`web/src/lib.rs:165`、バックエンドが`503`を返した場合の
+  文言)。原因はサーバー起動時にSMTP関連の環境変数(`mail.rs`が読む
+  `RSCHIKETTO_SMTP_*`系、`RS-Git`から移植したものと同じ命名規則)が
+  未設定のため、OTPメール送信機能自体が無効化された状態で動いている
+  ことによる——実装のバグではなく設定不足だが、**このままではOTP
+  ログインという認証の入口自体が機能せず、GUIを実際に使い始められない**
+  という運用上のブロッカーになっている。次回対応: (1) README/PORTING.md
+  に必要な環境変数一覧(SMTPホスト・ポート・認証情報・送信元アドレス)を
+  明記したセットアップ手順を追加する、(2) 開発・デモ用途では実SMTP
+  サーバーを用意しなくても動作確認できる代替手段(例: ログにOTPコードを
+  出力する開発用モード、または`RS-Git`側に同種の対応が既にあれば
+  それを移植する)の追加を検討する。
+
+- **2026-07-23(続き) チケットにガントチャート用フィールドを追加、
+  一覧APIにステータス/プロジェクトの絞り込みフィルタを追加(Redmine
+  機能ギャップを埋めるタスク、優先度1〈ガントチャート〉と3〈フィルタ・
+  検索〉のバックエンド側対応)**:
+  1. `Ticket`に`start_date: Option<String>`・`due_date: Option<String>`
+     (`YYYY-MM-DD`形式の文字列保持、パース・タイムゾーン変換は行わない)・
+     `done_ratio: u8`(0-100、範囲外は`create_ticket`/`update_ticket`
+     双方で`400`拒否)を追加。`CreateTicketRequest`/`UpdateTicketRequest`
+     にも同フィールドを追加(いずれも`Option`で省略可能、`update_ticket`
+     は指定したフィールドのみ更新する既存パターンを踏襲)。
+  2. `GET /api/tickets`に`status`(`open`/`in_progress`/`closed`)・
+     `project_id`(数値)のクエリパラメータによる絞り込みを追加。
+     `url`クレートへの新規依存を避けるため、クエリ文字列は`&`/`=`での
+     単純な自前パースとした(`status`/`project_id`は英数字のみを想定、
+     `%XX`エンコードは今回サポートしない——正直な開示)。
+  3. **未着手のまま残る項目(正直な開示)**: チケットへの`assignee`
+     (担当者)フィールド自体がまだ存在しないため、「担当者での絞り込み」
+     はタスク一覧の(3)からスコープ外とした——担当者機能自体の追加が
+     先に必要。GUI(`web/`)側でのガントチャート・カレンダー描画も
+     今回は未着手(バックエンドのフィールド・APIのみ)。通知機能
+     (`mail.rs`再利用によるチケット更新メール)も今回は未着手。
+  4. **検証**: `cargo build`警告1件(既存の`WikiPage::latest`未使用
+     警告のみ、新規警告無し)。`cargo test` **40件全green**(既存38件+
+     今回2件〈`ticket_gantt_fields_are_persisted_and_validated`:
+     作成・更新でのフィールド保存、`done_ratio`が101/255で`400`になる
+     ことを確認/`list_tickets_supports_status_and_project_id_filters`:
+     `status`単体・`project_id`単体・両方の組み合わせでの絞り込みを
+     確認〉)。
+  - 次にすべきこと: (1) GUI(`web/`)側にガントチャート・カレンダー
+    描画を実装(バックエンドのフィールドは今回追加済み)、
+    (2) チケットへの`assignee`フィールド追加(担当者フィルタの前提)、
+    (3) 通知機能(`mail.rs`再利用、チケット更新時のメール通知)、
+    (4) 実SMTP環境でのブラウザ実機E2E(前回までと同じ制約が継続)。
+
+- **2026-07-23(続き) ブラウザGUI(`web/`、Rust→WebAssembly)を新設
+  ——ユーザー指示「チケット管理を行なうWEBアプリですからGUIは基本の
+  はずです。充実させて下さい」への対応**:
+  1. 新規crate`web/`(`rs-red-web`、`crate-type = ["cdylib", "rlib"]`、
+     `wasm-bindgen`/`web-sys`のみ依存、Tauri/Node.js/TypeScript不使用
+     ——このエコシステム共通方針を踏襲)。OTPログイン、プロジェクト
+     一覧・作成、チケット一覧・作成・詳細・ステータス変更・コメント
+     投稿、Wiki一覧・作成・閲覧に対応した単一ページアプリ。
+  2. `main.rs`の`GET /`ハンドラを拡張し、`web/index.html`が存在すれば
+     優先配信、無ければ旧来の`INDEX_HTML`(API概要ページ)へ自動
+     フォールバックする設計に変更(`RSCHIKETTO_WEB_DIR`環境変数で
+     配置場所を変更可能、既定`./web`)。新規`GET /pkg/:file`ハンドラで
+     `wasm-bindgen`生成物(`rs_red_web.js`/`rs_red_web_bg.wasm`)を配信
+     (パストラバーサル対策込み)。
+  3. **オンライン専用**(ユーザー確認済み、オフライン/Service Worker
+     対応は行わない)。**ピンチズームは標準の`viewport`メタタグのみで
+     Android/iOSのモバイルブラウザでそのまま機能する**——特別な実装は
+     一切していない。
+  4. **実機検証(型チェックのみで完了と報告しない方針を徹底)**:
+     `cargo build --target wasm32-unknown-unknown`→`wasm-bindgen`で
+     `pkg/`生成→実際に`rs-chiketto`サーバーを起動し、Claude Browser
+     paneで`http://127.0.0.1:8299/`を開いて確認: (a)
+     ログイン画面が正しくレンダリングされコンソールエラー無し、
+     (b) メールアドレス入力→「ワンタイムコードを送信」クリックで
+     実際に`fetch()`→バックエンドAPI→`503`(SMTP未設定)が返り、
+     期待通り「SMTP未設定のため、このサーバーではOTP送信できません。」
+     という日本語メッセージが画面に表示されることを確認(WASM↔API間の
+     実通信が機能している証拠)。**正直な開示**: SMTPが無い環境のため、
+     ログイン後のチケット/Wiki操作フロー自体はブラウザ実機では
+     未検証(既存のハンドラレベルテストでのみ検証済み)。
+  5. **既存テストの修正**: `GET /`が`web/index.html`(GUI)を優先する
+     ようになったため、`root_returns_landing_page_with_key_markers`が
+     期待する内容を新しいGUIシェルのマーカー(`<title>RS-Red</title>`・
+     `request-otp-btn`)に更新。フォールバック時(`web/`不在)の専用
+     テストは、`RSCHIKETTO_WEB_DIR`環境変数がプロセス全体で共有され
+     `cargo test`のデフォルト並行実行下で他テストと競合しフレーキーに
+     なるリスクを避けるため、あえて追加していない(コードレビューで
+     明らかに正しい単純な分岐のため許容)。
+  6. **検証**: `cargo test`(サーバー側)**38件全green**。
+  - 次にすべきこと: (1) 実SMTP環境でのログイン→チケット/Wiki操作の
+    ブラウザ実機フルE2E、(2) ストレージ先選択機能(前HANDOFFエントリ
+    参照)、(3) `aruaru-db`/PostgreSQL DUAL DB移行、(4) ガントチャート・
+    カレンダーのGUI実装、(5) VPSへのデプロイ(GUI込みでの初回公開)。
+
+- **2026-07-23(続き) 永続化層をRustJSON経由に変更、ストレージ先の
+  選択制構想を記録(ユーザー指示、複数回にわたり要件が拡張)**:
+  1. **完了**: `src/rustjson.rs`(RPoemの`open-runo-rustjson`を移植)を
+     新設し、`project.rs`/`comments.rs`/`wiki.rs`/`accounts.rs`/
+     `access.rs`の`load()`を`serde_json::from_slice`から
+     `rustjson::parse_typed`(緩い構文を許容、パース結果は標準
+     `serde_json::Value`)へ変更。書き込みは引き続き整形済み標準JSON。
+     `cargo test`38件全green。
+  2. **未着手・構想段階のストレージ先選択機能(ユーザー指示、原文の
+     要件をそのまま記録)**: 「DBやDATAは、Androidスマホ版は、
+     Googleドライブに保存をデフォルトにして。WindowsやLINUXは、その
+     HDDやSSDやnVMEでの保存を基本にして。保存先をGoogleドライブ以外
+     にも有名なクラウド保存やレンタルサーバーやVPSサーバーなども
+     簡単にフォルダーを作れる機能を搭載でいくつか選択可能にして」。
+     整理すると:
+     - **Windows/Linux既定**: ローカルディスク(HDD/SSD/NVMe)——
+       これは現状の`RSCHIKETTO_DATA_DIR`環境変数によるローカル
+       パス指定のままで既に満たしている。
+     - **Android既定**: Googleドライブ(Android版アプリ自体が
+       まだ存在しないため、Android版アプリシェル開発〈HANDOFF
+       「2026-07-23(続き) Redmine比較の完成度評価」節参照〉と
+       セットで実装する必要がある)。
+     - **選択可能な追加ストレージ先**: Googleドライブ以外の有名クラウド
+       ストレージ(Dropbox・OneDrive等、複数)、およびレンタルサーバー/
+       VPSサーバー上に「簡単にフォルダーを作れる」機能(SFTPやWebDAV
+       経由のリモートディレクトリ作成・書き込みが現実的な実装候補)。
+     - **設計方針(次回着手時の指針)**: 現状の`load`/`save`は
+       `tokio::fs::read`/`tokio::fs::write`によるローカルファイル
+       直接アクセスに閉じている。複数ストレージ先を選択可能にするには、
+       ローカルファイル・Google Drive API・Dropbox API・
+       SFTP/WebDAVをそれぞれ実装した共通の`StorageBackend`
+       トレイル抽象化が必要(`open-web-server-ledger::PostgresWal`等が
+       `WriteAheadLog`traitを実装する既存パターンと同じ設計思想)。
+       **正直な開示**: クラウドAPI連携(特にGoogle Drive/Dropbox)は
+       OAuth2認証情報(クライアントID/シークレット)をユーザー自身が
+       各サービスのデベロッパーコンソールで取得・設定する必要があり、
+       このアプリ単体で完結する機能ではない——着手時にこの制約を
+       ユーザーへ明示すること。
+  3. **`aruaru-db`/PostgreSQL DUAL DB構成への移行は今回も未着手のまま**
+     (RJSON移植は「JSONファイルの読み込み方」の改善であり、DB移行とは
+     別軸。DUAL DB移行は別途大きめの増分として着手すること)。
+  - 次にすべきこと: (1) 上記ストレージ選択機能の`StorageBackend`
+    トレイト設計・ローカルファイル実装への移行(既存動作を壊さない
+    最初の一歩)、(2) `aruaru-db`/PostgreSQL DUAL DB構成、(3) Android版
+    アプリシェル開発(Googleドライブ既定保存とセット)、(4) ガント
+    チャート・カレンダー。
+
+- **2026-07-23(続き) Redmine比較の完成度評価とAndroid版クロス
+  コンパイル実証(ユーザー指示「WindowsとLINUXと早期に省電力版か通常版か
+  常時電源接続版を選択可能」「Androidスマホとタブレット版も対応」
+  「将来はMACなどにも対応したい」)**:
+  - **完成度の正直な評価**: チケット管理+Wikiという核の部分は動くが、
+    Redmine全体の機能網羅率としては**まだ2〜3割程度**。ガントチャート・
+    カレンダー・フォーラム・SCM連携・カスタムフィールドが未実装、
+    永続化もJSONファイルのみ(`aruaru-db`/PostgreSQL DUAL DB移行が
+    未着手)。
+  - **Android版の実現可能性を実証**(`open-web-server`側と同じ手法):
+    `cargo ndk -t aarch64-linux-android build --release`が**一発で
+    成功**し、`target/aarch64-linux-android/release/rs-chiketto`が
+    実際のAndroid ELFバイナリ(`for Android 21`、NDK r27b)として
+    生成されることを確認した。`open-web-server`と違いTLS/QUIC/ACMEの
+    重い依存が無いため、openssl-sys系の問題も発生しなかった。
+  - **次にすべきこと(優先順位)**: (1) ガントチャート・カレンダー
+    (Redmine完成度向上として最優先)、(2) `aruaru-db`/PostgreSQL DUAL DB
+    構成への移行、(3) Windows/Linux版のインストーラー+電源プロファイル
+    (省電力版/常時電源接続版/通常版)対応——`open-web-server`側で
+    先行する同様の要件と設計を揃えること、(4) Android版アプリ化
+    (APK同梱・フォアグラウンドサービス・電源プロファイル連携、
+    コアバイナリのクロスコンパイル自体は実証済み)、(5) 将来のmacOS対応
+    (RustのmacOSクロスコンパイル自体は成熟しているが、この開発環境
+    〈Windows〉ではmacOS SDKが無くローカル検証は不可、実機確認は
+    macOS環境が使えるセッションで行うこと)。
+
+- **2026-07-23 プロジェクト単位Wikiを追加(HANDOFF記載の宿題「Wiki・
+  ガントチャート等の追加機能」への対応、ユーザー指示「並列で開発」)**:
+  1. `src/wiki.rs`を新設: `WikiPage { id, project_id, slug, title,
+     revisions: Vec<WikiRevision> }`と`WikiStore`(既存の`project.rs`/
+     `comments.rs`と同じJSONファイル永続化パターン、`wiki.json`)。
+     編集のたびに`WikiRevision`を`revisions`へ追記し、旧内容は保持する
+     (差分表示は今回スコープ外、最小限の履歴保持のみ)。
+  2. `main.rs`に`POST/GET /api/projects/:id/wiki`
+     (一覧=`Need::View`、作成=`Need::Edit`、`slug`はプロジェクト内で
+     一意)・`GET/PUT/DELETE /api/wiki/:id`(取得=`Need::View`、
+     改訂=`Need::Edit`、削除=管理者のみ)を追加。既存の
+     `comments.rs`/`access.rs`の権限モデルをそのまま再利用
+     (複数パスパラメータ〈`:id/:slug`〉の実績がこのコードベースに
+     無かったため、リスクを避けて単一パラメータ設計〈`/api/wiki/:id`〉
+     に統一——一覧のみプロジェクトIDで、詳細操作はWikiページ自身の
+     連番IDで行う)。
+  3. テスト追加: `wiki.rs`のストレージ往復・`latest()`ヘルパー3件、
+     ハンドラレベルで`wiki_page_lifecycle_is_gated_by_project_access_
+     and_keeps_revision_history`(未ログイン401・無許可403・重複slug
+     400・管理者による改訂で履歴が2件に増えること・削除後は404、を
+     一気通貫で検証)。
+  4. **検証**: `cargo build`警告1件(`WikiPage::latest()`が現状呼ばれて
+     いないという`dead_code`警告のみ、既存の`AccelBackend`等未実装
+     拡張点と同じ許容パターン)。`cargo test` **33件全green**
+     (前回28件+今回5件〈wiki.rs単体4件・handler_tests 1件〉)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→Wikiページ作成の
+    フルE2E(今回もハンドラレベルテストでの代替検証に留まる)、
+    (2) ガントチャート・カレンダー、(3) `aruaru-db`/PostgreSQL DUAL DB
+    構成への移行(現状はJSONファイル永続化)、(4) VPSへのデプロイ
+    (今回は未実施)。
+
+- **2026-07-21 プロジェクト新設(器のみ)**: GitHub空リポジトリ・
+  VPS空フォルダ・ローカル作業フォルダを用意。次回、`RS-Git`と同じ構成
+  (`Cargo.toml`+`poem`)でのブートストラップに着手する。
+  - 次にすべきこと: (1) 3プロジェクトのうちどれから着手するか決定、
+    (2) Redmineの機能のうちMVP範囲の選定(チケット管理のみ、等)、
+    (3) `RS-Git`と同じ認証・アクセス制御の再利用可否の検討、
+    (4) `aruaru-db`との接続方式の設計。
+
+- **2026-07-21(続き) v0.1.0ブートストラップ完了: チケットCRUD+OTP認証**
+  (ユーザー指示「RS-Chikettoから着手」、`RS-Git`と`RS-Chiketto`のブート
+  ストラップを並行して進めた1つ):
+  1. `RS-Git`の`src/auth.rs`/`src/mail.rs`をそのまま移植(OTPログイン機構、
+     環境変数名のみ`RSCHIKETTO_*`に変更)。v0.1.0時点では管理者アカウント
+     のみログイン可能(`RS-Git`にある登録アカウント制・アクセス制御の
+     細分化はまだ移植していない、次回以降の増分)。
+  2. チケット(Issue)のCRUD: `POST/GET /api/tickets`・
+     `GET/PUT /api/tickets/:id`。ステータスは`open`/`in_progress`/
+     `closed`の3値。永続化はJSONファイル(`aruaru-db`/PostgreSQL DUAL DB
+     構成への移行はまだ未着手——今回は動くMVPを優先)。
+  3. **検証**: `cargo build`警告0件、`cargo test` 6件全green
+     (auth関連、`RS-Git`からそのまま移植したテスト)。実バイナリで
+     E2E確認: 未ログインでの`GET /api/tickets`→`401`、実SMTP経由の
+     OTPログイン→チケット作成(`201`)→一覧取得→ステータス更新
+     (`open`→`closed`)まで実HTTPで一連の動作を確認済み。
+  - 次にすべきこと: (1) プロジェクト・サブプロジェクト階層の追加、
+    (2) `RS-Git`にある登録アカウント制・アクセス制御(閲覧/編集の個別
+    許可)の移植、(3) Wiki・ガントチャート等の追加機能、(4) `aruaru-db`/
+    PostgreSQL DUAL DB構成への移行(現状はJSONファイル永続化)、
+    (5) GitHubへの初回push・VPSデプロイ。
+
+- **2026-07-21(続き) 登録アカウント制・アクセス制御を`main.rs`へ配線
+  (`RS-Git`の設計をそのまま踏襲、上記(2)の着手分、コミット`53d4cb8`)**:
+  1. `mod access; mod accounts;`を追加、`AppState`に
+     `accounts_locked`(`RSCHIKETTO_ACCOUNTS_LOCKED`、既定`true`——
+     `RS-Git`の`RGIT_ACCOUNTS_LOCKED`と同じ方針)を追加。
+  2. `Ticket`に`project: String`(単純な文字列ラベル)を追加し、
+     `access::is_allowed`経由で閲覧(`GET /api/tickets`は所属
+     プロジェクトごとにフィルタ、`GET /api/tickets/:id`は403/401)・
+     編集(`POST`/`PUT`)にアクセス制御を適用。プロジェクト名から
+     `access.rs`の`project_id: u64`への変換は`DefaultHasher`による
+     ハッシュ値(v0.1.0時点ではProject自体のCRUDは無い、正直な開示:
+     ハッシュ衝突は理論上ゼロではないが実用上無視できる程度という
+     判断——将来Project CRUDを追加する際は連番IDに置き換える)。
+  3. `request_otp`を`accounts::AccountStore`の登録メールにも対応
+     (管理者 OR 登録済みアカウント、`RS-Git`と同じ判定)。
+  4. `POST/GET /api/accounts`・`POST /api/accounts/request`
+     (認証不要)・`GET /api/accounts/requests`・
+     `POST /api/accounts/requests/:id/decide`を`RS-Git`と同じ形状で追加。
+     `decide`は承認時に`project`が指定されていればそのプロジェクトの
+     `access::AccessConfig::accounts`へ閲覧/編集許可を書き込む。
+     `accounts_locked`中は管理者メール以外の登録・承認申請の承認を
+     `403`で拒否。
+  5. `mail.rs`に`send_access_request_notice`/`send_access_decision`を
+     追加(申請受付時に管理者へ、審査結果を申請者へSMTP通知、
+     `RS-Git`と同じ)。
+  6. **検証**: `cargo build`警告0件。`cargo test` **12件全green**
+     (既存9件+`accounts`モジュール新規2件〈JSON永続化の往復・
+     ファイル未存在時のデフォルト読み込み〉+既存の重複を除く)。
+     **正直な開示**: 今回追加した`accounts`モジュールの単体テストは
+     ストレージ層(JSON往復)のみで、HTTPハンドラレベルの統合テスト
+     (ログイン可否・401/403の切り分け・承認フロー)は今回書いていない
+     ——実バイナリでのcurlスモークテストで代替検証した(下記)。
+     次回、`poem`のテストクライアントを使ったハンドラレベルの
+     自動テストを追加すべき。
+     実バイナリ起動(`RSCHIKETTO_DATA_DIR`一時ディレクトリ、
+     `RSCHIKETTO_ADMIN_EMAIL=admin@example.com`、SMTP未設定)での
+     `curl`スモークテスト: `GET /healthz`→`200`、`GET /api/tickets`
+     (未ログイン)→`200`(空配列、フィルタ設計通り)、
+     `POST /api/auth/request-otp`(未登録メール)→`403`、
+     (管理者メール、SMTP未設定)→`503`、
+     `POST /api/accounts/request`(認証不要)→`201`、
+     `POST/GET /api/accounts`(未認証)→ともに`401`、を確認。
+     **SMTPが無い環境のため、実OTPメール送受信を伴うログイン成功
+     パス・`decide_access_request`の承認フルE2Eは未検証**(コード
+     レビューと401/403系の実HTTP確認までに留まる、正直な開示)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→チケット作成
+    フルE2E(登録アカウント・自己申請承認を含む)、(2) `poem`テスト
+    クライアントによるハンドラレベルの自動テスト追加、
+    (3) Project自体のCRUD(現状は文字列ラベル+ハッシュのみ)、
+    (4) VPSへのデプロイ(今回は未実施)、(5) Wiki・ガントチャート等
+    の追加機能、(6) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
+
+- **2026-07-21(続き) `poem::test::TestClient`によるハンドラレベル統合
+  テストを追加(上記(2)の宿題への対応)**:
+  1. `main.rs`のルーティング定義を`build_routes(state: AppState) ->
+     impl poem::Endpoint`として切り出し、`main()`とテストの両方から
+     再利用できるようにした。
+  2. `Cargo.toml`の`poem`依存に`features = ["test"]`を追加
+     (`poem::test::TestClient`を使うために必須、当初
+     `unresolved import poem::test`でビルド失敗していたため修正)。
+  3. `#[cfg(test)] mod handler_tests`を`main.rs`末尾に追加、4件:
+     - 未認証`GET /api/tickets`→`200`・空配列(既存のプロジェクト単位
+       フィルタ設計通り、401ではないことを確認)。
+     - `POST /api/accounts/request`(自己申請・認証不要)→`201`、
+       `pending_requests`に登録されることを確認。
+     - 管理者セッションで`decide`承認→`access::AccessConfig`へ
+       期待した`allow_view`/`allow_edit`が書き込まれることを確認。
+     - `accounts_locked=true`時、管理者以外の承認対象を管理者セッションで
+       承認しようとすると`403`になることを確認(`AppState`をテスト
+       ローカルに構築、プロセス環境変数`RSCHIKETTO_ACCOUNTS_LOCKED`は
+       変更していない)。
+     各テストは`std::env::temp_dir()`配下に一意な一時ディレクトリを
+     `data_root`として使い、テスト間の状態共有を避けている。
+  4. **検証**: `cargo build`警告0件、`cargo test` **16件全green**
+     (既存12件+今回追加4件)。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→チケット作成
+    フルE2E、(2) Project自体のCRUD、(3) VPSへのデプロイ(今回は未実施)、
+    (4) Wiki・ガントチャート等の追加機能、(5) `aruaru-db`/PostgreSQL
+    DUAL DB構成への移行。
+
+
+- **2026-07-22 Project自体のCRUDを追加(HANDOFF記載の宿題(3)への対応)**:
+  1. `src/project.rs`を新設: `Project { id: u64, name: String,
+     description: String, created_at: String, updated_at: String }`と
+     `ProjectStore`(既存の`TicketStore`/`accounts::AccountStore`と同じ
+     JSONファイル永続化パターン、`projects.json`)。
+  2. `main.rs`に`POST/GET /api/projects`・`GET/PUT/DELETE /api/projects/:id`
+     を追加。作成・更新・削除は`require_admin_session`で管理者のみに
+     制限(`access.rs`の「構造を作れるのは管理者のみ」という既存方針を
+     踏襲)、一覧・詳細取得は認証不要(プロジェクトの存在自体は隠す
+     情報ではなく、チケットの中身は`access.rs`のアクセス制御で個別に
+     守られる、という判断)。
+  3. `Ticket.project: String`(文字列ラベル)を`Ticket.project_id: u64`
+     (実在する`Project`への参照)に置き換え。`create_ticket`で
+     `project::ProjectStore::exists`により実在確認し、存在しない
+     `project_id`の場合は`400`で明確に拒否するようにした。
+  4. `check_project_access`・`access.rs`連携から`project_id()`関数
+     (`DefaultHasher`によるハッシュ経由の変換)を削除し、実在する
+     `Project.id`(連番`u64`)を直接`access::load`/`access::save`へ渡す
+     ように変更(HANDOFFに記載の「将来Project CRUDを追加する際は
+     連番IDに置き換える」を実施)。`decide_access_request`の
+     `DecideAccessRequestPayload.project: Option<String>`も
+     `project_id: Option<u64>`に変更。
+  5. テスト追加: `project.rs`のストレージ往復テスト2件、
+     ハンドラレベルで`project_crud_via_http`(管理者のみ作成・更新・
+     削除できること、一覧・詳細は認証不要であること)、
+     `create_ticket_against_nonexistent_project_fails_cleanly`
+     (存在しない`project_id`でのチケット作成が`400`になること)、
+     `access_control_gates_ticket_creation_by_real_project_id`
+     (実在の連番`project_id`に対して`access::AccessConfig`が正しく
+     効くこと、未ログイン`401`・無許可アカウント`403`・許可済み
+     アカウント`201`の3パターン)。
+  6. `README.md`にAPIエンドポイント一覧表を新設(従来README側には
+     エンドポイント一覧が無かったため今回新設、`GET /`ランディング
+     ページの表と同内容に揃えた)。
+  7. **検証**: `cargo build`警告0件。`cargo test` **22件全green**
+     (前回HANDOFF時点の16件+今回の6件〈project.rs 2件・
+     handler_tests 4件〉、なお前回16件から今回着手時点で
+     `handler_tests`の既存テストが1件`project`関連の変更で調整済み
+     ―新規追加分は正味6件)。実バイナリでのcurlスモークテスト
+     (`RSCHIKETTO_DATA_DIR`一時ディレクトリ、SMTP未設定): `GET /api/projects`
+     (未認証)→`200`・空配列、`POST /api/projects`(未認証)→`401`、
+     `POST /api/tickets`(存在しない`project_id=999999`)→`400`
+     (期待通りのエラーメッセージ)、`GET /api/tickets`(未認証)→`200`・
+     空配列、を確認。**正直な開示**: SMTPが無いローカル検証環境のため、
+     管理者OTPログインを経由した「プロジェクト作成→そのproject_idで
+     チケット作成→アクセス制御が効く」というフル経路のcurl E2Eは
+     今回も未検証(前回HANDOFFと同じ制約)——この経路は
+     `access_control_gates_ticket_creation_by_real_project_id`の
+     ハンドラレベルテスト(`AuthStore::create_session`でOTPを迂回して
+     セッションを直接発行、既存テストと同じ手法)で代替検証している。
+  - 次にすべきこと: (1) 実SMTP環境でのOTPログイン→プロジェクト作成→
+    チケット作成のフルE2E、(2) プロジェクトのサブプロジェクト階層
+    (親子関係)、(3) VPSへのデプロイ、(4) Wiki・ガントチャート等の
+    追加機能、(5) `aruaru-db`/PostgreSQL DUAL DB構成への移行。
+
+- **2026-07-22(続き) プロジェクトのサブプロジェクト階層・チケットへの
+  コメントを追加(前回HANDOFF宿題(2)、および実用最小限として優先度が
+  高いと判断したコメント機能への対応)**:
+  1. `project.rs`の`Project`に`parent_id: Option<u64>`を追加。
+     `ProjectStore::children_of`(直接の子一覧)・`would_create_cycle`
+     (自分自身や自分の子孫を親に設定しようとする循環参照を検出)を実装。
+  2. `main.rs`: `POST /api/projects`・`PUT /api/projects/:id`が
+     `parent_id`を受け付けるように変更(`PUT`側は二重`Option`
+     デシリアライズパターン——フィールド省略は変更なし、`null`は
+     親解除、値ありは親設定——を新規導入)。`GET /api/projects/:id/children`
+     を追加(認証不要、既存の一覧・詳細取得と同じ方針)。循環参照・
+     存在しない`parent_id`はいずれも`400`で拒否。
+  3. `src/comments.rs`を新設: `Comment { id, ticket_id, author_email,
+     body, created_at }`と`CommentStore`(既存パターンと同じJSON
+     ファイル永続化、`comments.json`)。`GET/POST /api/tickets/:id/comments`
+     (閲覧/編集権限をチケット所属プロジェクトの`access.rs`経由で
+     チェック、既存の`update_ticket`/`get_ticket`と同じ権限モデルを
+     再利用——モデレーションキューは投稿時点で権限確認済みのため不要)、
+     `DELETE /api/comments/:id`(管理者または投稿者本人のみ)を追加。
+  4. `README.md`・`GET /`ランディングページのエンドポイント表、および
+     このCLAUDE.mdの正直な開示リストから「サブプロジェクト階層」の
+     未実装項目を除去。
+  5. テスト追加: `project.rs`の`would_create_cycle_detects_self_and_ancestor_cycles`、
+     `comments.rs`のストレージ往復2件、ハンドラレベルで
+     `subproject_hierarchy_children_listing_and_cycle_rejection`
+     (子作成・`GET /children`・親を自分の子孫や自分自身に設定しようと
+     すると`400`)、`comment_creation_is_gated_by_project_edit_access`・
+     `comment_visibility_is_gated_by_project_view_access`
+     (未ログイン`401`、無許可アカウント`403`、許可済みアカウント成功)。
+  6. **検証**: `cargo build`(`cargo build`単体・`cargo build`の一部の
+     `cargo test`両方)警告0件。`cargo test` **28件全green**(前回22件+
+     今回6件〈project.rs 1件・comments.rs 2件・handler_tests 3件〉)。
+     実バイナリを起動(`RSCHIKETTO_DATA_DIR`一時ディレクトリ、
+     `RSCHIKETTO_ADMIN_EMAIL=admin@example.com`、SMTP未設定、
+     `RSCHIKETTO_PORT=8199`)して`curl`で実HTTP確認: `GET /healthz`→
+     `200`、`GET /api/projects/1/children`(存在しない`id`)→`404`、
+     `POST /api/projects`(未認証)→`401`、`GET /api/tickets/1/comments`
+     (存在しないチケット)→`404`、`POST /api/tickets/1/comments`
+     (存在しないチケット、未認証)→`404`(存在チェックが認証チェックより
+     先に走る設計通り)、をいずれも確認。**正直な開示**: 前回までと
+     同じ制約でSMTPが無いローカル検証環境のため、管理者OTPログインを
+     経由した「プロジェクト作成→子プロジェクト作成→チケット作成→
+     コメント投稿」というフル経路のcurl E2Eは今回も未検証——この経路は
+     上記のハンドラレベルテスト(`AuthStore::create_session`でOTPを
+     迂回してセッションを直接発行)で代替検証している。
+  - 次にすべきこと: (1) 実SMTP環境でのフルE2E(OTPログイン→プロジェクト
+    作成→サブプロジェクト作成→チケット作成→コメント投稿)、
+    (2) VPSへのデプロイ(今回も未実施)、(3) Wiki・ガントチャート等の
+    追加機能、(4) `aruaru-db`/PostgreSQL DUAL DB構成への移行、
+    (5) コメントの編集(現状は投稿・削除のみ)。
+
+## 同時並行開発の対象プロジェクト(2026-07-21、ユーザー指示・拡張版)
+
+`RS-Chiketto`・`RS-Blog`・`RS-EC`(この3プロジェクト自身、着手順は
+「1つずつ順番に」の方針のまま)に加えて、以下の既存プロジェクトを
+**同時に開発を進め、完成度を高めていく**:
+
+- [open-raid-z](https://github.com/aon-co-jp/open-raid-z) — 開発ルールの
+  正本。3プロジェクトの`CLAUDE.md`もここの記述と同期を取る。
+- [aruaru-db](https://github.com/aon-co-jp/aruaru-db) — ZFS互換・ACID
+  互換のRust製DB。3プロジェクトが採用する「分身の術」DB共有構成の実体。
+- [open-cuda](https://github.com/aon-co-jp/open-cuda) — GPU抽象化・
+  GEMM/Attention計算基盤(`opencuda-blas`/`opencuda-bert`)。
+- [aruaru-llm](https://github.com/aon-co-jp/aruaru-llm) — 上記
+  `open-cuda`を使った実装例(bag-of-words→文埋め込みベースの意図分類へ
+  移行済み)。3プロジェクトが将来AI機能を持つ際の先行実装として参照。
+- [open-web-server](https://github.com/aon-co-jp/open-web-server) —
+  「分身の術」構成(1インスタンスを複数ドメインが共有)の基盤実装、
+  Nginx/Apacheハイブリッド仕様のWebサーバー。
+- [open-cosmo](https://github.com/aon-co-jp/open-cosmo) — 関連する
+  Webサーバー/フロントエンド基盤(詳細は同リポジトリのCLAUDE.md参照)。
+- [RPoem](https://github.com/aon-co-jp/RPoem) — アプリケーションサーバー
+  層(旧poem-cosmo-tauri)。`open-raid-z`とVersionlessAPIによる
+  バージョンレス運用、`aruaru-db`とのDUAL DATABASE構成の先行実装。
+
+- Python製AIライブラリのRust移植ハイブリッド/トライブリッド版
+  (マーケティング調査での1〜6位、vLLM/Transformers/NumPy/PyTorch互換/
+  scikit-learn/Whisper相当の良いとこ取り)——**Rustを基本とし、必要なら
+  `RPoem`(アプリケーションサーバー層)も併用する**(ユーザー指示、
+  2026-07-21追記)。`open-cuda`ワークスペース内の`opencuda-blas`
+  (NumPy相当)・`opencuda-bert`(Transformers推論パス相当、実装済み)が
+  このトライブリッド化の実体。今後の`opencuda-llm`(vLLM相当、生成
+  デコーダ追加時)を、必要であれば`RPoem`上のHTTPサービスとして
+  提供することも視野に入れる。
+
+**理由**: これらは3プロジェクトが実際に依存する基盤コンポーネント
+(DB層・GPU計算基盤・「分身の術」共有構成・アプリケーションサーバー層)
+であり、基盤側の完成を待ってから3プロジェクトに着手するのではなく、
+実際に統合しながら並行して育て、エコシステム全体の完成度を高めていく
+方針とする。
+
+## API 方針: REST 全廃・gRPC / Connect へ (2026-11-04)
+
+### 日本語
+- **REST は全廃する。新しい API は REST で作らない。** ブラウザや `curl` から呼ぶ API は **Connect の単純呼び出し**(`POST /<パッケージ>.<Service>/<Method>`、`content-type: application/json`、本文は JSON)、サービス間は **gRPC / gRPC-web**(RPoem の管理API `open_runo.admin.v1.Admin` と同じ流儀)。ストリーミングは、必要になってから。
+- **既存の REST は、触るときに順に移す。** 移したら旧 REST の経路は消す。移行が終わるまで残るが、**新規には追加しない**。
+- **JSON は RS-JSON に統一**する(読み込みは `from_str_secure` / `parse_secure` でサイズ・深さ・重複キーの上限つき、書き出しは `rust_json::fast`)。ブラウザの WASM に `prost` は入れない(サイズが増えるため)。
+- **例外(自分たちの API ではなく、相手の規格が決めているもの)**: ACME、OAuth/OIDC のコールバック、第三者(GitHub など)からの Webhook、ヘルスチェック、静的ファイル配信、OTLP など。これらは規格どおりの HTTP を受ける。
+- 参考実装: `RPoem`(`open_runo.admin.v1.Admin`)、`open-easy-web`(`server/src/connect.rs`、`proto/open_easy_web/admin/v1/admin.proto`)。
+- ※ このリポジトリのコードが既に方針どおりかどうかは、各リポジトリの現状による。この節は方針の記録であり、コードの変更を意味しない。
+
+### English
+- **REST is being abolished. New APIs are not built as REST.** APIs called from browsers or `curl` use **Connect unary calls** (`POST /<package>.<Service>/<Method>`, `content-type: application/json`, JSON body); service-to-service calls use **gRPC / gRPC-web** (the same style as RPoem's admin API `open_runo.admin.v1.Admin`). Streaming only when it is actually needed.
+- **Existing REST endpoints are migrated one by one, when they are touched.** The old REST route is removed once migrated. Until migration is finished they remain, but **no new ones are added**.
+- **JSON is unified on RS-JSON**: reading with `from_str_secure` / `parse_secure` (size, depth and duplicate-key limits), writing with `rust_json::fast`. `prost` is not put into browser WASM (it would grow the binary).
+- **Exceptions (shapes dictated by someone else's standard, not our own API)**: ACME, OAuth/OIDC callbacks, webhooks from third parties (e.g. GitHub), health checks, static file serving, OTLP, and so on. These accept plain HTTP as the standard requires.
+- Reference implementations: `RPoem` (`open_runo.admin.v1.Admin`) and `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Note: whether the code in a given repository already follows this policy depends on that repository. This section records the policy; it does not mean the code has been changed.
+
+### Deutsch (KI-Übersetzung, redaktionell überarbeitet; noch nicht von Muttersprachlern geprüft)
+- **REST wird vollständig abgeschafft; neue APIs entstehen nicht mehr als REST.** APIs, die aus dem Browser oder per `curl` aufgerufen werden, verwenden **unäre Connect-Aufrufe** (`POST /<Paket>.<Service>/<Methode>`, `content-type: application/json`, JSON-Body). Zwischen Diensten kommen **gRPC bzw. gRPC-web** zum Einsatz, im selben Stil wie die Admin-API von RPoem (`open_runo.admin.v1.Admin`). Streaming wird erst ergänzt, wenn es tatsächlich gebraucht wird.
+- **Bestehende REST-Endpunkte werden schrittweise umgestellt, und zwar immer dann, wenn man ohnehin an ihnen arbeitet.** Sobald ein Endpunkt umgestellt ist, wird die alte REST-Route entfernt. Bis zum Abschluss der Migration bleiben die übrigen bestehen, es werden aber **keine neuen mehr hinzugefügt**.
+- **JSON wird einheitlich über RS-JSON verarbeitet**: Gelesen wird mit `from_str_secure` bzw. `parse_secure` (mit Obergrenzen für Größe, Verschachtelungstiefe und doppelte Schlüssel), geschrieben mit `rust_json::fast`. `prost` wird nicht in das Browser-WASM aufgenommen, da es die Datei vergrößern würde.
+- **Ausnahmen (Schnittstellen, deren Form ein fremder Standard vorgibt und die nicht zu unserer eigenen API gehören)**: ACME, OAuth/OIDC-Callbacks, Webhooks von Drittanbietern (z. B. GitHub), Health-Checks, die Auslieferung statischer Dateien, OTLP und Ähnliches. Diese nehmen, wie vom jeweiligen Standard verlangt, gewöhnliches HTTP entgegen.
+- Referenzimplementierungen: `RPoem` (`open_runo.admin.v1.Admin`) und `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Hinweis: Ob der Code eines einzelnen Repositorys diese Richtlinie bereits erfüllt, hängt vom jeweiligen Repository ab. Dieser Abschnitt dokumentiert lediglich die Richtlinie; er besagt nicht, dass der Code schon angepasst wurde.
+
+### Русский (перевод выполнен с помощью ИИ и отредактирован; носителями языка пока не проверен)
+- **От REST мы полностью отказываемся; новые API больше не создаются в стиле REST.** API, к которым обращаются из браузера или через `curl`, используют **унарные вызовы Connect** (`POST /<пакет>.<Service>/<Method>`, `content-type: application/json`, тело запроса — JSON). Для взаимодействия между сервисами применяются **gRPC и gRPC-web** — в том же стиле, что и административный API RPoem (`open_runo.admin.v1.Admin`). Потоковая передача данных добавляется лишь тогда, когда в ней действительно возникает необходимость.
+- **Существующие REST-эндпоинты переводятся поэтапно — по мере того, как с ними приходится работать.** После перевода старый REST-маршрут удаляется. Пока миграция не завершена, оставшиеся эндпоинты сохраняются, но **новые не добавляются**.
+- **Работа с JSON унифицирована на основе RS-JSON**: чтение — через `from_str_secure` или `parse_secure` (с ограничениями на размер, глубину вложенности и повторяющиеся ключи), запись — через `rust_json::fast`. `prost` в браузерный WASM не включается, поскольку это увеличило бы размер файла.
+- **Исключения (интерфейсы, форму которых определяет чужой стандарт, а не наш собственный API)**: ACME, обратные вызовы OAuth/OIDC, вебхуки сторонних сервисов (например, GitHub), проверки работоспособности, раздача статических файлов, OTLP и тому подобное. Такие интерфейсы принимают обычный HTTP, как того требует соответствующий стандарт.
+- Эталонные реализации: `RPoem` (`open_runo.admin.v1.Admin`) и `open-easy-web` (`server/src/connect.rs`, `proto/open_easy_web/admin/v1/admin.proto`).
+- Примечание: соответствует ли код конкретного репозитория этой политике, зависит от самого репозитория. Данный раздел лишь фиксирует политику и не означает, что код уже изменён.
+
+## API 方針の補足: 用語の整理と使い分け (2026-11-04)
+
+### 日本語
+**1つに統一するものではなく、別の層の話です。** 「REST の代わり」になるのは Connect・gRPC・GraphQL だけで、WASM は画面を作る技術です。
+
+| 用語 | 何か | REST の代わりか |
+|---|---|---|
+| REST | URL と HTTP メソッドで操作を表す API の作り方 | 全廃する側 |
+| **Connect** | `POST /サービス名/メソッド名` に JSON を送る形式。`curl` でもブラウザの `fetch` でも呼べる | はい(**採用**) |
+| **gRPC** | 同じ「サービス/メソッド」の考え方を、バイナリ(protobuf)と HTTP/2 で行う形式。速く、ストリーミングも得意 | はい(**サービス同士に採用**) |
+| gRPC-web | gRPC のブラウザ向けの変形版 | はい(必要なら) |
+| GraphQL | 欲しい項目を問い合わせる形式 | 一部だけ(**問い合わせ(読み取り)専用**) |
+| WASM | Rust をブラウザの中で動かす仕組み | いいえ(画面を作る技術) |
+
+- **ブラウザの画面や `curl` から呼ぶ API は Connect**(POST、JSON を RS-JSON で読み書き)。ブラウザの WASM は素の gRPC を話せず、Connect なら `fetch` のままで、`prost` を足さずに済む(画面のサイズも増えない)。
+- **サービス同士の通信(サーバー間、重い処理、ストリーミング)は gRPC。** 多くは Connect で足りるので、ストリーミングが必要になった所だけ gRPC に上げる。
+- **GraphQL は、まとめて問い合わせたいときの読み取り専用。** 書き込み(操作)には使わない。
+- **WASM は画面を作る技術として、そのまま使う。** 画面から呼ぶ API が Connect になっただけ。
+- 外部の規格が形を決めるもの(ACME、OAuth のコールバック、第三者の Webhook、ヘルスチェック、静的ファイル、OTLP)は、規格どおりの HTTP のまま。
+- **迷ったら Connect。**
+
+### English
+**These are not alternatives to unify; they sit at different layers.** Only Connect, gRPC and GraphQL can replace REST; WASM is a way to build the UI.
+
+| Term | What it is | Replaces REST? |
+|---|---|---|
+| REST | API style that expresses operations through URLs and HTTP methods | The thing being abolished |
+| **Connect** | `POST /Service/Method` with a JSON body; callable from `curl` and from a browser `fetch` | Yes (**adopted**) |
+| **gRPC** | The same service/method idea over binary (protobuf) and HTTP/2; fast, good at streaming | Yes (**for service-to-service**) |
+| gRPC-web | A browser-friendly variant of gRPC | Yes (if needed) |
+| GraphQL | A query language: ask for exactly the fields you want | Partly (**read-only queries**) |
+| WASM | Runs Rust inside the browser | No (a UI technology) |
+
+- **APIs called from browser screens or `curl` use Connect** (POST, JSON read and written with RS-JSON). Browser WASM cannot speak plain gRPC; with Connect it stays a `fetch`, and `prost` is not needed (the binary does not grow).
+- **Service-to-service calls (server to server, heavy work, streaming) use gRPC.** Connect is enough in most places; move a call to gRPC only where streaming is actually needed.
+- **GraphQL is read-only**, for queries that gather several pieces of data. It is not used for writes (operations).
+- **WASM stays as the way to build the UI.** The API it calls simply became Connect.
+- Interfaces whose shape an outside standard dictates (ACME, OAuth callbacks, third-party webhooks, health checks, static files, OTLP) stay plain HTTP.
+- **When in doubt, use Connect.**
+
+### Deutsch (KI-Übersetzung, sprachlich überarbeitet; noch nicht von Muttersprachlern geprüft)
+**Es geht nicht darum, eine einzige Technik auszuwählen – die Begriffe liegen auf unterschiedlichen Ebenen.** Als Ersatz für REST kommen nur Connect, gRPC und GraphQL in Frage; WASM dagegen ist eine Technik, mit der die Benutzeroberfläche gebaut wird.
+
+| Begriff | Was ist das? | Ersatz für REST? |
+|---|---|---|
+| REST | Ein API-Stil, bei dem Operationen über URLs und HTTP-Methoden ausgedrückt werden | wird abgeschafft |
+| **Connect** | `POST /Dienst/Methode` mit JSON im Body; aufrufbar mit `curl` ebenso wie mit `fetch` im Browser | ja (**gewählt**) |
+| **gRPC** | Dasselbe Prinzip aus Dienst und Methode, aber über binäres protobuf und HTTP/2; schnell und gut für Streaming geeignet | ja (**zwischen Diensten**) |
+| gRPC-web | Eine für den Browser angepasste Variante von gRPC | ja (bei Bedarf) |
+| GraphQL | Abfragesprache, mit der man genau die benötigten Felder anfordert | teilweise (**nur für lesende Abfragen**) |
+| WASM | Führt Rust-Code direkt im Browser aus | nein (Technik für die Oberfläche) |
+
+- **APIs, die von Browseroberflächen oder per `curl` aufgerufen werden, verwenden Connect** (POST; JSON wird mit RS-JSON gelesen und geschrieben). WASM im Browser kann kein reines gRPC sprechen. Mit Connect bleibt es bei einem gewöhnlichen `fetch`, und `prost` ist nicht nötig – die WASM-Datei wird dadurch nicht größer.
+- **Für die Kommunikation zwischen Diensten (Server zu Server, rechenintensive Aufgaben, Streaming) wird gRPC eingesetzt.** In den meisten Fällen reicht Connect aus; auf gRPC wird nur dort umgestellt, wo Streaming tatsächlich gebraucht wird.
+- **GraphQL dient ausschließlich lesenden Abfragen**, wenn mehrere Informationen gebündelt abgefragt werden sollen. Für Schreibzugriffe (Operationen) wird es nicht verwendet.
+- **WASM bleibt die Technik für die Oberfläche.** Geändert hat sich lediglich, dass die aufgerufene API nun auf Connect beruht.
+- Schnittstellen, deren Form durch einen externen Standard festgelegt ist (ACME, OAuth-Callbacks, Webhooks von Drittanbietern, Health-Checks, statische Dateien, OTLP), bleiben gewöhnliches HTTP.
+- **Im Zweifel: Connect.**
+
+### Русский (перевод выполнен с помощью ИИ и литературно отредактирован; носителями языка пока не проверен)
+**Это не варианты, из которых нужно выбрать один, а технологии разных уровней.** Заменить REST могут только Connect, gRPC и GraphQL; WASM же — это способ создания пользовательского интерфейса.
+
+| Термин | Что это | Заменяет REST? |
+|---|---|---|
+| REST | Стиль построения API, при котором операции выражаются через URL и HTTP-методы | отменяется |
+| **Connect** | `POST /Сервис/Метод` с телом в формате JSON; вызывается как из `curl`, так и из браузерного `fetch` | да (**выбран**) |
+| **gRPC** | Тот же принцип «сервис — метод», но поверх двоичного формата protobuf и HTTP/2; работает быстро и хорошо подходит для потоковой передачи | да (**для связи между сервисами**) |
+| gRPC-web | Адаптированный для браузера вариант gRPC | да (при необходимости) |
+| GraphQL | Язык запросов: клиент запрашивает ровно те поля, которые ему нужны | частично (**только запросы на чтение**) |
+| WASM | Позволяет выполнять код на Rust прямо в браузере | нет (технология для интерфейса) |
+
+- **API, которые вызываются из браузерных интерфейсов или через `curl`, строятся на Connect** (POST; JSON читается и записывается через RS-JSON). Браузерный WASM не умеет работать с «чистым» gRPC. С Connect достаточно обычного `fetch`, а `prost` не требуется — размер WASM-файла не увеличивается.
+- **Для обмена между сервисами (сервер — сервер, ресурсоёмкие задачи, потоковая передача) применяется gRPC.** В большинстве случаев достаточно Connect; на gRPC переходят только там, где потоковая передача действительно необходима.
+- **GraphQL используется только для чтения**, когда нужно получить сразу несколько связанных данных. Для записи (операций) он не применяется.
+- **WASM по-прежнему остаётся технологией для интерфейса.** Изменилось лишь то, что вызываемый им API теперь построен на Connect.
+- Интерфейсы, форма которых задана внешним стандартом (ACME, обратные вызовы OAuth, вебхуки сторонних сервисов, проверки работоспособности, статические файлы, OTLP), остаются обычным HTTP.
+- **Если есть сомнения — выбирайте Connect.**
